@@ -30,12 +30,6 @@ float noise(vec2 st)
 // MAIN PROGRAM
 void main()
 {
-	// mix(min, max, parameter) is used to "blend" linearly between "min" and "max" accordning to a parameter in [0.0;1.0]
-
-	
-	// MANDATORY
-	// - a vertex shader MUST write the value of the predined variable " (GLSL langage)"
-	// - this value represent a position in NDC space (normalized device coordintes), i.e the cube [-1.0;1.0]x[-1;1.0]x[-1;1.0]
 	vec3 position = vec3(2.0 * position_in - 1.0, 0.0);
 
 	// add turbulence in height
@@ -43,7 +37,7 @@ void main()
 	float turbulence = noise(position_in)* 3.0;
 	position.z += turbulence / uTerrainElevation; // tune the height of turbulence
 	height = position.z*255.;
-	// - write position
+	
 	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
 }
 `;
@@ -73,7 +67,7 @@ void main()
 //--------------------------------------------------------------------------------------------------------
 // Global variables
 //--------------------------------------------------------------------------------------------------------
-var shaderProgram = null;
+var terrainShader = null;
 var vao = null;
 // GUI (graphical user interface)
 // Terrain
@@ -196,7 +190,6 @@ function init_wgl()
 	ewgl.continuous_update = true;
 	
 	// CUSTOM USER INTERFACE
-	// - used with "uniform" variables to be able to edit GPU constant variables
 	UserInterface.begin(); // name of html id
 		// MESH COLOR
 		// TERRAIN
@@ -213,7 +206,7 @@ function init_wgl()
 	UserInterface.end();
 	
 	// Create and initialize a shader program // [=> Sylvain's API - wrapper of GL code]
-	shaderProgram = ShaderProgram(terrain_vert, terrain_frag, 'terrain shader');
+	terrainShader = ShaderProgram(terrain_vert, terrain_frag, 'terrain shader');
 
 	// Build mesh
 	buildMesh();
@@ -222,6 +215,11 @@ function init_wgl()
 	gl.clearColor(0, 0, 0 ,1); // black opaque [values are between 0.0 and 1.0]
 	// - activate depth buffer
 	gl.enable(gl.DEPTH_TEST);
+
+	// - color map initialize only one time (test performance)
+	terrainShader.bind();
+	Uniforms.ucolor_map = colorMap;
+	gl.useProgram(null);
 }
 
 //--------------------------------------------------------------------------------------------------------
@@ -241,25 +239,14 @@ function draw_wgl()
 	// --------------------------------
 	
 	// Set "current" shader program
-	shaderProgram.bind(); // [=> Sylvain's API - wrapper of GL code]
-
-	// Set uniforms // [=> Sylvain's API - wrapper of GL code]
-	// - "uniforms" are variables on GPU in "constant memory" => there values are constant during a "draw command" such as drawArrays()
-	// - they can be seen as user custom parameters of your shaders
-	// - they can be accessed in any shader (vertex, fragment)
-	// - when creating a "shader program", shader text files are read and analyze by GL functions
-	// - a dictionnary is created with all "uniforms" declared in shader codes
-	// - calling "Uniforms.xxx" is used to update value of a "uniform" on GPU
-	// BEWARE: name MUST be the same as the one declared in your shaders "uniform" variable
-	// - here, we retrieve "slider" values from GUI (graphical user interface)
+	terrainShader.bind();
 	Uniforms.uTerrainElevation = slider_terrainElevation.value;
 	// - camera
 	Uniforms.uProjectionMatrix = ewgl.scene_camera.get_projection_matrix();
 	Uniforms.uViewMatrix = ewgl.scene_camera.get_view_matrix();
 	// - model matrix
 	Uniforms.uModelMatrix = Matrix.mult(Matrix.scale(0.5), Matrix.rotateX(-60), Matrix.rotateZ(-30));
-	// - color map
-	Uniforms.ucolor_map = colorMap;
+
 	
 	// Bind "current" vertex array (VAO)
 	gl.bindVertexArray(vao);
