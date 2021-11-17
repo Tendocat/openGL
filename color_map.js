@@ -59,7 +59,7 @@ uniform vec4 ucolor_map[255];
 // MAIN PROGRAM
 void main()
 {
-	vec4 color = ucolor_map[int(height)];
+	vec4 color = ucolor_map[int(height)*2];
 	oFragmentColor = color;
 }
 `;
@@ -201,7 +201,7 @@ function init_wgl()
 		slider_terrainWidth = UserInterface.add_slider('Width', 2, 100, 10, buildMesh);
 		slider_terrainHeight = UserInterface.add_slider('Height', 2, 100, 10, buildMesh);
 		UserInterface.end_use();
-		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 50.0, 5.0, update_wgl);
+		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
 		UserInterface.end_use();
 	UserInterface.end();
 	
@@ -240,7 +240,7 @@ function draw_wgl()
 	
 	// Set "current" shader program
 	terrainShader.bind();
-	Uniforms.uTerrainElevation = slider_terrainElevation.value;
+	Uniforms.uTerrainElevation = slider_terrainElevation.value*2;
 	// - camera
 	Uniforms.uProjectionMatrix = ewgl.scene_camera.get_projection_matrix();
 	Uniforms.uViewMatrix = ewgl.scene_camera.get_view_matrix();
