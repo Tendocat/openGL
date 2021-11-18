@@ -19,25 +19,71 @@ uniform float uTerrainElevation;
 
 // OUTPUT
 out float height;
+out vec3 v_position;
+out vec3 v_normal;
 
-// FUNCTIONS
+// FUNCTIONS noise and fbm FROM https://thebookofshaders.com/13/
+float rand (vec2 _st) {
+    return fract(sin(dot(_st.xy,
+                         vec2(12.9898,78.233)))*
+        43758.5453123);
+}
 // - here, is it a noise function that create random values in [-1.0;1.0] given a position in [0.0;1.0]
-float noise(vec2 st)
-{
-    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+float noise (vec2 st) {
+    vec2 i = floor(st);
+    vec2 f = fract(st);
+
+    // Four corners in 2D of a tile
+    float a = rand(i);
+    float b = rand(i + vec2(1.0, 0.0));
+    float c = rand(i + vec2(0.0, 1.0));
+    float d = rand(i + vec2(1.0, 1.0));
+
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    return mix(a, b, u.x) +
+            (c - a)* u.y * (1.0 - u.x) +
+            (d - b) * u.x * u.y;
+}
+float fbm (vec2 st) {
+    // Initial values
+    float value = 0.0;
+    float amplitude = .5;
+    float frequency = 0.;
+    for (int i = 0; i < 20; i++) {
+        value += amplitude * noise(st);
+        st *= 2.;
+        amplitude *= .5;
+    }
+    return value;
 }
 
+// 'p' la position post traitement, 'base' la position sur le quad
+vec3 compute_normal(vec3 p, vec3 base) {
+	vec3 n1 = base + vec3(0.2,0.,0.);
+	vec3 n2 = base + vec3(0.,0.2,0.);
+	n1.z += fbm(n1.xy*5.) / uTerrainElevation;
+	n2.z += fbm(n2.xy*5.) / uTerrainElevation;
+	
+	vec3 tangent = n1 - p;
+	vec3 bitangent = n2 - p;
+
+	return normalize(cross(tangent, bitangent));
+}
 // MAIN PROGRAM
 void main()
 {
 	vec3 position = vec3(2.0 * position_in - 1.0, 0.0);
+	vec3 baseForNormals = position;
 
-	// add turbulence in height
-	vec2 st = position_in;
-	float turbulence = noise(position_in)* 3.0;
-	position.z += turbulence / uTerrainElevation; // tune the height of turbulence
-	height = position.z*255.;
+	float turbulence = fbm(position_in*5.);
+	position.z += turbulence / uTerrainElevation;
+	//position.z = min(position.z, 1.);
+	height = position.z*180.;	// adapt to colormap length
 	
+	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
+	v_normal = compute_normal(position, baseForNormals);
+
 	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
 }
 `;
@@ -47,28 +93,62 @@ var terrain_frag =
 `#version 300 es
 precision highp float;
 
+#define M_PI 3.14159265358979
+
 // INPUT
-in float height;
+in float height; // used for ucolor_map
+in vec3 v_position;
+in vec3 v_normal;
 
 // OUTPUT
 out vec4 oFragmentColor;
 
 // UNIFORM
 uniform vec4 ucolor_map[255];
+// LIGHTING
+uniform float uLightIntensity;
+uniform vec3 uLightPosition;
 
 // MAIN PROGRAM
 void main()
 {
-	vec4 color = ucolor_map[int(height)*2];
-	oFragmentColor = color;
+	vec3 p = v_position;
+	vec3 n = normalize(v_normal);
+
+	// AMBIANT
+	vec3 Ka = ucolor_map[int(height)].xyz;
+	vec3 Ia = uLightIntensity * Ka;
+
+	// DIFFUS
+	vec3 lightDir = normalize(uLightPosition - p);
+	float d2 = dot(lightDir, lightDir);
+	lightDir = normalize(lightDir);
+	float diffuseTerm = max(0.0, dot(n, lightDir));
+	vec3 Id = (uLightIntensity / d2) * Ka * diffuseTerm;
+	Id = Id / M_PI;
+
+	// SPECULAIRE
+	vec3 Is = vec3(0.0);
+	if (diffuseTerm > 0.0)
+	{
+		vec3 viewDir = normalize(-p.xyz); // "view direction" from current vertex position => because, in View space, "dir = vec3(0.0, 0.0, 0.0) - p"
+		vec3 halfDir = normalize(viewDir + lightDir); // half-vector between view and light vectors
+		float specularTerm = max(0.0, pow(dot(n, halfDir), 20.)); // "Ns" control the size of the specular highlight (the rugosity)
+		Is = uLightIntensity * Ka * vec3(specularTerm);
+		Is /= (2. + 20.0) / (2.0 * M_PI);
+	}
+	oFragmentColor = vec4(Ia*0.3 + Id*0.3 + Is*0.3, 1);
 }
 `;
 
 //--------------------------------------------------------------------------------------------------------
 // Global variables
 //--------------------------------------------------------------------------------------------------------
+
+// shaders
 var terrainShader = null;
 var vao = null;
+
 // GUI (graphical user interface)
 // Terrain
 var jMax = 10;
@@ -77,12 +157,17 @@ var nbMeshIndices = 0;
 var slider_terrainWidth;
 var slider_terrainHeight;
 var slider_terrainElevation;
+// - lighting
+var slider_light_x;
+var slider_light_y;
+var slider_light_z;
+var slider_light_intensity;
 
 // Color map
 var colorMap = [];
 
 //--------------------------------------------------------------------------------------------------------
-// Build mesh
+// Build mesh FROM CORRECTION
 //--------------------------------------------------------------------------------------------------------
 function buildMesh()
 {
@@ -190,18 +275,28 @@ function init_wgl()
 	ewgl.continuous_update = true;
 	
 	// CUSTOM USER INTERFACE
-	UserInterface.begin(); // name of html id
-		// MESH COLOR
+	UserInterface.begin();
 		// TERRAIN
-		 // - container (H: horizontal)
 		UserInterface.use_field_set('H', "Terrain Generator");
 		UserInterface.use_field_set('H', "Grid size");
-		// - sliders (name, min, max, default value, callback called when value is modified)
-		// - update_wgl() is caleld to refresh screen
-		slider_terrainWidth = UserInterface.add_slider('Width', 2, 100, 10, buildMesh);
-		slider_terrainHeight = UserInterface.add_slider('Height', 2, 100, 10, buildMesh);
+		slider_terrainWidth = UserInterface.add_slider('Width', 2, 100, 50, buildMesh);
+		slider_terrainHeight = UserInterface.add_slider('Height', 2, 100, 50, buildMesh);
 		UserInterface.end_use();
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
+		UserInterface.end_use();
+
+		// LIGHTING
+		UserInterface.use_field_set('H', "Lighting");
+
+		UserInterface.use_field_set('H', "Position");
+		slider_light_x  = UserInterface.add_slider('X ', -100, 100, 0, update_wgl);
+		UserInterface.set_widget_color(slider_light_x,'#ff0000','#ffcccc');
+		slider_light_y  = UserInterface.add_slider('Y ', -100, 100, 80, update_wgl);
+		UserInterface.set_widget_color(slider_light_y,'#00bb00','#ccffcc');
+		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, 30, update_wgl);
+		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
+		UserInterface.end_use();
+		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 20, update_wgl);
 		UserInterface.end_use();
 	UserInterface.end();
 	
@@ -223,30 +318,29 @@ function init_wgl()
 }
 
 //--------------------------------------------------------------------------------------------------------
-// Render scene
+// Render terrain
 //--------------------------------------------------------------------------------------------------------
-function draw_wgl()
+function draw_terrain()
 {
-	// --------------------------------
-	// [1] - always do that
-	// --------------------------------
-	
 	// Clear the GL color framebuffer
 	gl.clear(gl.COLOR_BUFFER_BIT);
 
-	// --------------------------------
-	// [2] - render your scene
-	// --------------------------------
-	
-	// Set "current" shader program
 	terrainShader.bind();
-	Uniforms.uTerrainElevation = slider_terrainElevation.value*2;
+
+	let viewMatrix = ewgl.scene_camera.get_view_matrix();
+	let modelMatrix = Matrix.mult(Matrix.scale(0.5), Matrix.rotateX(-60), Matrix.rotateZ(-30));
+
+	Uniforms.uTerrainElevation = slider_terrainElevation.value*0.2;
 	// - camera
 	Uniforms.uProjectionMatrix = ewgl.scene_camera.get_projection_matrix();
-	Uniforms.uViewMatrix = ewgl.scene_camera.get_view_matrix();
+	Uniforms.uViewMatrix = viewMatrix;
 	// - model matrix
-	Uniforms.uModelMatrix = Matrix.mult(Matrix.scale(0.5), Matrix.rotateX(-60), Matrix.rotateZ(-30));
-
+	Uniforms.uModelMatrix = modelMatrix;
+	let mvm = Matrix.mult(viewMatrix, modelMatrix);
+	// - lighting
+	Uniforms.uLightIntensity = slider_light_intensity.value/20;
+	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value)); // to get the position in the View space
+	
 	
 	// Bind "current" vertex array (VAO)
 	gl.bindVertexArray(vao);
@@ -260,6 +354,14 @@ function draw_wgl()
 	gl.bindVertexArray(null);
 	// - unbind shader program
 	gl.useProgram(null);
+}
+
+//--------------------------------------------------------------------------------------------------------
+// Render scene
+//--------------------------------------------------------------------------------------------------------
+function draw_wgl()
+{
+	draw_terrain();
 }
 
 function init_color_map()
@@ -521,5 +623,6 @@ function init_color_map()
 						Vec4(1.0,        1.0,        1.0,        1.0)
 						];
 }
+
 init_color_map();
 ewgl.launch_3d();
