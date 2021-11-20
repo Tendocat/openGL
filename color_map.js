@@ -16,6 +16,7 @@ uniform mat4 uViewMatrix;
 uniform mat4 uModelMatrix;
 
 uniform float uTerrainElevation;
+uniform float uGridSize;
 
 // OUTPUT
 out float height;
@@ -24,9 +25,7 @@ out vec3 v_normal;
 
 // FUNCTIONS noise and fbm FROM https://thebookofshaders.com/13/
 float rand (vec2 _st) {
-    return fract(sin(dot(_st.xy,
-                         vec2(12.9898,78.233)))*
-        43758.5453123);
+    return fract(sin(dot(_st.xy, vec2(12.9898,78.233))) * 437358.5453123);
 }
 // - here, is it a noise function that create random values in [-1.0;1.0] given a position in [0.0;1.0]
 float noise (vec2 st) {
@@ -58,17 +57,19 @@ float fbm (vec2 st) {
     return value;
 }
 
-// 'p' la position post traitement, 'base' la position sur le quad
-vec3 compute_normal(vec3 p, vec3 base) {
-	vec3 n1 = base + vec3(0.2,0.,0.);
-	vec3 n2 = base + vec3(0.,0.2,0.);
-	n1.z += fbm(n1.xy*5.) / uTerrainElevation;
-	n2.z += fbm(n2.xy*5.) / uTerrainElevation;
-	
-	vec3 tangent = n1 - p;
-	vec3 bitangent = n2 - p;
-
-	return normalize(cross(tangent, bitangent));
+// 'base' la position sans hauteur
+vec3 compute_normal(vec3 base) {
+	vec3 off = vec3(1.0/uGridSize, 1.0/uGridSize, 0.0);
+	float hL = fbm(base.xy - off.xz);
+	float hR = fbm(base.xy + off.xz);
+	float hD = fbm(base.xy - off.zy);
+	float hU = fbm(base.xy + off.zy);
+  
+	vec3 n;
+	n.x = hL - hR;
+	n.y = hD - hU;
+	n.z = 1.0/(uGridSize*2.0);
+	return normalize(n);
 }
 // MAIN PROGRAM
 void main()
@@ -76,13 +77,12 @@ void main()
 	vec3 position = vec3(2.0 * position_in - 1.0, 0.0);
 	vec3 baseForNormals = position;
 
-	float turbulence = fbm(position_in*5.);
-	position.z += turbulence / uTerrainElevation;
+	position.z += fbm(position_in*5.) / uTerrainElevation;
 	//position.z = min(position.z, 1.);
 	height = position.z*180.;	// adapt to colormap length
 	
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
-	v_normal = compute_normal(position, baseForNormals);
+	v_normal = (uViewMatrix * uModelMatrix * vec4(compute_normal(baseForNormals), 1.)).xyz;
 
 	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
 }
@@ -105,39 +105,57 @@ out vec4 oFragmentColor;
 
 // UNIFORM
 uniform vec4 ucolor_map[255];
-// LIGHTING
 uniform float uLightIntensity;
 uniform vec3 uLightPosition;
 
 // MAIN PROGRAM
 void main()
 {
-	vec3 p = v_position;
 	vec3 n = normalize(v_normal);
 
 	// AMBIANT
 	vec3 Ka = ucolor_map[int(height)].xyz;
-	vec3 Ia = uLightIntensity * Ka;
+	vec3 Ia = Ka;
 
 	// DIFFUS
-	vec3 lightDir = normalize(uLightPosition - p);
-	float d2 = dot(lightDir, lightDir);
-	lightDir = normalize(lightDir);
-	float diffuseTerm = max(0.0, dot(n, lightDir));
-	vec3 Id = (uLightIntensity / d2) * Ka * diffuseTerm;
+	vec3 lightDir = normalize(uLightPosition - v_position);
+	vec3 Id = uLightIntensity * Ka * max(0.0, dot(n, lightDir));
 	Id = Id / M_PI;
 
-	// SPECULAIRE
-	vec3 Is = vec3(0.0);
-	if (diffuseTerm > 0.0)
-	{
-		vec3 viewDir = normalize(-p.xyz); // "view direction" from current vertex position => because, in View space, "dir = vec3(0.0, 0.0, 0.0) - p"
-		vec3 halfDir = normalize(viewDir + lightDir); // half-vector between view and light vectors
-		float specularTerm = max(0.0, pow(dot(n, halfDir), 20.)); // "Ns" control the size of the specular highlight (the rugosity)
-		Is = uLightIntensity * Ka * vec3(specularTerm);
-		Is /= (2. + 20.0) / (2.0 * M_PI);
-	}
-	oFragmentColor = vec4(Ia*0.3 + Id*0.3 + Is*0.3, 1);
+	oFragmentColor = vec4(Ia*.1 + Id*.5, 1.);
+	//oFragmentColor = vec4(n,1.);
+}
+`;
+
+//--------------------------------------------------------------------------------------------------------
+// SKYBOX SHADER
+//--------------------------------------------------------------------------------------------------------
+var skybox_vert =
+`#version 300 es
+
+layout(location = 0) in vec3 position_in;
+out vec3 tex_coord;
+uniform mat4 uProjectionViewMatrix;
+
+void main()
+{
+	tex_coord = position_in;
+	gl_Position = uProjectionViewMatrix * vec4(position_in, 1.0);
+}  
+`;
+
+//--------------------------------------------------------------------------------------------------------
+var skybox_frag =
+`#version 300 es
+precision highp float;
+
+in vec3 tex_coord;
+out vec4 frag;
+uniform samplerCube TU;
+
+void main()
+{	
+	frag = texture(TU, tex_coord);
 }
 `;
 
@@ -148,14 +166,17 @@ void main()
 // shaders
 var terrainShader = null;
 var vao = null;
+// Skybox
+var envMapShader = null;
+var envMapTex = null;
+var skybox_rend = null;
+var sl_refl = null;
 
 // GUI (graphical user interface)
 // Terrain
-var jMax = 10;
-var iMax = 10;
+var gridSize = 10;
 var nbMeshIndices = 0;
-var slider_terrainWidth;
-var slider_terrainHeight;
+var slider_terrainPrecision;
 var slider_terrainElevation;
 // - lighting
 var slider_light_x;
@@ -171,8 +192,7 @@ var colorMap = [];
 //--------------------------------------------------------------------------------------------------------
 function buildMesh()
 {
-	iMax = slider_terrainWidth.value;
-	jMax = slider_terrainHeight.value;
+	gridSize = slider_terrainPrecision.value;
 
 	gl.deleteVertexArray(vao);
 
@@ -181,15 +201,15 @@ function buildMesh()
 	// - this is the geometry of your object)
 	// - we store 2D positions as 1D array : (x0,y0,x1,y1,x2,y2,x3,y3)
 	// - for a terrain: a grid of 2D points in [0.0;1.0]
-	let data_positions = new Float32Array(iMax * jMax * 2);
-	for (let j = 0; j < jMax; j++)
+	let data_positions = new Float32Array(gridSize * gridSize * 2);
+	for (let j = 0; j < gridSize; j++)
 	{
-	    for (let i = 0; i < iMax; i++)
+	    for (let i = 0; i < gridSize; i++)
 	    {
 			// x
-			data_positions[ 2 * (i + j * iMax) ] = i / (iMax - 1);
+			data_positions[ 2 * (i + j * gridSize) ] = i / (gridSize - 1);
 			// y
-			data_positions[ 2 * (i + j * iMax) + 1 ] = j / (jMax - 1);
+			data_positions[ 2 * (i + j * gridSize) + 1 ] = j / (gridSize - 1);
 	    }
 	}
 	// - create a VBO (kind of memory pointer or handle on GPU)
@@ -205,24 +225,23 @@ function buildMesh()
 	// - create data on CPU
 	// - this is the geometry of your object)
 	// - we store 2D position "indices" as 1D array of "triangle" indices : (i0,j0,k0, i1,j1,k1, i2,j2,k2, ...)
-	let nbMeshQuads = (iMax - 1) * (jMax - 1);
+	let nbMeshQuads = (gridSize - 1) * (gridSize - 1);
 	let nbMeshTriangles = 2 * nbMeshQuads;
 	nbMeshIndices = 3 * nbMeshTriangles;
 	let ebo_data = new Uint32Array(nbMeshIndices);
 	let current_quad = 0;
-	for (let j = 0; j < jMax - 1; j++)
+	for (let j = 0; j < gridSize - 1; j++)
 	{
-		//for (let i = 0; i < iMax; i++)
-	    for (let i = 0; i < iMax - 1; i++)
+	    for (let i = 0; i < gridSize - 1; i++)
 	    {
 		   	// triangle 1
-			ebo_data[ 6 * current_quad ] = i + j * iMax;
-			ebo_data[ 6 * current_quad + 1 ] = (i + 1) + j * iMax;
-			ebo_data[ 6 * current_quad + 2 ] = i + (j + 1) * iMax;
+			ebo_data[ 6 * current_quad ] = i + j * gridSize;
+			ebo_data[ 6 * current_quad + 1 ] = (i + 1) + j * gridSize;
+			ebo_data[ 6 * current_quad + 2 ] = i + (j + 1) * gridSize;
 			// triangle 2
-			ebo_data[ 6 * current_quad + 3 ] = i + (j + 1) * iMax;
-			ebo_data[ 6 * current_quad + 4 ] = (i + 1) + j * iMax;
-			ebo_data[ 6 * current_quad + 5 ] = (i + 1) + (j + 1) * iMax;
+			ebo_data[ 6 * current_quad + 3 ] = i + (j + 1) * gridSize;
+			ebo_data[ 6 * current_quad + 4 ] = (i + 1) + j * gridSize;
+			ebo_data[ 6 * current_quad + 5 ] = (i + 1) + (j + 1) * gridSize;
 			current_quad++;
 		}
 	}
@@ -278,10 +297,7 @@ function init_wgl()
 	UserInterface.begin();
 		// TERRAIN
 		UserInterface.use_field_set('H', "Terrain Generator");
-		UserInterface.use_field_set('H', "Grid size");
-		slider_terrainWidth = UserInterface.add_slider('Width', 2, 100, 50, buildMesh);
-		slider_terrainHeight = UserInterface.add_slider('Height', 2, 100, 50, buildMesh);
-		UserInterface.end_use();
+		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 100, 50, buildMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
 		UserInterface.end_use();
 
@@ -293,7 +309,7 @@ function init_wgl()
 		UserInterface.set_widget_color(slider_light_x,'#ff0000','#ffcccc');
 		slider_light_y  = UserInterface.add_slider('Y ', -100, 100, 80, update_wgl);
 		UserInterface.set_widget_color(slider_light_y,'#00bb00','#ccffcc');
-		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, 30, update_wgl);
+		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, -100, update_wgl);
 		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
 		UserInterface.end_use();
 		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 20, update_wgl);
@@ -305,16 +321,31 @@ function init_wgl()
 
 	// Build mesh
 	buildMesh();
-	// Set default GL states
-	// - color to use when refreshing screen
-	gl.clearColor(0, 0, 0 ,1); // black opaque [values are between 0.0 and 1.0]
-	// - activate depth buffer
-	gl.enable(gl.DEPTH_TEST);
+		// 1. Environnement map
+	// CubeMap texture creation
+	envMapTex = TextureCubeMap();
+	envMapTex.load(["textures/skybox/skybox1/right2.bmp","textures/skybox/skybox1/left2.bmp",
+	"textures/skybox/skybox1/back2.bmp","textures/skybox/skybox1/front.bmp",
+	"textures/skybox/skybox1/top.bmp","textures/skybox/skybox1/bottom.bmp"]).then(update_wgl);
 
-	// - color map initialize only one time (test performance)
-	terrainShader.bind();
-	Uniforms.ucolor_map = colorMap;
+	envMapShader = ShaderProgram(skybox_vert,skybox_frag,'sky');
+	skybox_rend = Mesh.Cube().renderer(0, -1, -1);
+	
+
+	gl.enable(gl.DEPTH_TEST);
+}
+//--------------------------------------------------------------------------------------------------------
+// Render skybox
+//--------------------------------------------------------------------------------------------------------
+function draw_skybox()
+{
+	gl.disable(gl.DEPTH_TEST);
+	envMapShader.bind();
+	Uniforms.uProjectionViewMatrix = ewgl.scene_camera.get_matrix_for_skybox();
+	Uniforms.TU = envMapTex.bind(0);
+	skybox_rend.draw(gl.TRIANGLES);
 	gl.useProgram(null);
+	gl.enable(gl.DEPTH_TEST);
 }
 
 //--------------------------------------------------------------------------------------------------------
@@ -322,13 +353,10 @@ function init_wgl()
 //--------------------------------------------------------------------------------------------------------
 function draw_terrain()
 {
-	// Clear the GL color framebuffer
-	gl.clear(gl.COLOR_BUFFER_BIT);
-
 	terrainShader.bind();
 
 	let viewMatrix = ewgl.scene_camera.get_view_matrix();
-	let modelMatrix = Matrix.mult(Matrix.scale(0.5), Matrix.rotateX(-60), Matrix.rotateZ(-30));
+	let modelMatrix = Matrix.scale(0.5);
 
 	Uniforms.uTerrainElevation = slider_terrainElevation.value*0.2;
 	// - camera
@@ -340,8 +368,11 @@ function draw_terrain()
 	// - lighting
 	Uniforms.uLightIntensity = slider_light_intensity.value/20;
 	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value)); // to get the position in the View space
-	
-	
+	Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));				 // to get the position in world space
+	// - terrain
+	Uniforms.ucolor_map = colorMap;
+	Uniforms.uGridSize = gridSize;
+
 	// Bind "current" vertex array (VAO)
 	gl.bindVertexArray(vao);
 	
@@ -361,6 +392,11 @@ function draw_terrain()
 //--------------------------------------------------------------------------------------------------------
 function draw_wgl()
 {
+	gl.clearColor(0, 0, 0, 0);
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+	draw_skybox();
+
 	draw_terrain();
 }
 
