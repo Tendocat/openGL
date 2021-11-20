@@ -60,10 +60,10 @@ float fbm (vec2 st) {
 // 'base' la position sans hauteur
 vec3 compute_normal(vec3 base) {
 	vec3 off = vec3(1.0/uGridSize, 1.0/uGridSize, 0.0);
-	float hL = fbm(base.xy - off.xz);
-	float hR = fbm(base.xy + off.xz);
-	float hD = fbm(base.xy - off.zy);
-	float hU = fbm(base.xy + off.zy);
+	float hR = fbm((base.xy + off.xz)) / uTerrainElevation;
+	float hL = fbm((base.xy - off.xz)) / uTerrainElevation;
+	float hD = fbm((base.xy - off.zy)) / uTerrainElevation;
+	float hU = fbm((base.xy + off.zy)) / uTerrainElevation;
   
 	vec3 n;
 	n.x = hL - hR;
@@ -115,14 +115,14 @@ void main()
 
 	// AMBIANT
 	vec3 Ka = ucolor_map[int(height)].xyz;
-	vec3 Ia = Ka;
+	vec3 Ia = uLightIntensity * Ka;
 
 	// DIFFUS
 	vec3 lightDir = normalize(uLightPosition - v_position);
 	vec3 Id = uLightIntensity * Ka * max(0.0, dot(n, lightDir));
 	Id = Id / M_PI;
 
-	oFragmentColor = vec4(Ia*.1 + Id*.5, 1.);
+	oFragmentColor = vec4(Ia*.5 + Id*.5, 1.);
 	//oFragmentColor = vec4(n,1.);
 }
 `;
@@ -307,11 +307,12 @@ function init_wgl()
 		UserInterface.use_field_set('H', "Position");
 		slider_light_x  = UserInterface.add_slider('X ', -100, 100, 0, update_wgl);
 		UserInterface.set_widget_color(slider_light_x,'#ff0000','#ffcccc');
-		slider_light_y  = UserInterface.add_slider('Y ', -100, 100, 80, update_wgl);
+		slider_light_y  = UserInterface.add_slider('Y ', -100, 100, 0, update_wgl);
 		UserInterface.set_widget_color(slider_light_y,'#00bb00','#ccffcc');
 		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, -100, update_wgl);
 		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
 		UserInterface.end_use();
+		
 		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 20, update_wgl);
 		UserInterface.end_use();
 	UserInterface.end();
@@ -368,7 +369,7 @@ function draw_terrain()
 	// - lighting
 	Uniforms.uLightIntensity = slider_light_intensity.value/20;
 	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value)); // to get the position in the View space
-	Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));				 // to get the position in world space
+	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));				 // to get the position in world space
 	// - terrain
 	Uniforms.ucolor_map = colorMap;
 	Uniforms.uGridSize = gridSize;
