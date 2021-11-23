@@ -78,7 +78,6 @@ void main()
 	vec3 baseForNormals = position;
 
 	position.z += fbm(position_in*5.) / uTerrainElevation;
-	//position.z = min(position.z, 1.);
 	height = position.z*180.;	// adapt to colormap length
 	
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
@@ -150,12 +149,48 @@ var skybox_frag =
 precision highp float;
 
 in vec3 tex_coord;
-out vec4 frag;
+out vec4 oFragmentColor;
 uniform samplerCube TU;
 
 void main()
 {	
-	frag = texture(TU, tex_coord);
+	oFragmentColor = texture(TU, tex_coord);
+}
+`;
+
+//--------------------------------------------------------------------------------------------------------
+// WATER SHADER
+//--------------------------------------------------------------------------------------------------------
+var water_vert =
+`#version 300 es
+
+// INPUT
+layout(location = 1) in vec2 position_in;
+
+// UNIFORM
+uniform mat4 uProjectionMatrix;
+uniform mat4 uViewMatrix;
+uniform mat4 uModelMatrix;
+
+uniform float uHeight;
+
+void main()
+{
+	vec3 position = vec3(position_in, uHeight);
+	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
+}  
+`;
+
+//--------------------------------------------------------------------------------------------------------
+var water_frag =
+`#version 300 es
+precision highp float;
+
+out vec4 oFragmentColor;
+
+void main()
+{	
+	oFragmentColor = vec4(1.,0.,0.,1.);
 }
 `;
 
@@ -165,7 +200,9 @@ void main()
 
 // shaders
 var terrainShader = null;
-var vao = null;
+var waterShader = null;
+var vaoTerrain = null;
+var vaoWater = null;
 // Skybox
 var envMapShader = null;
 var envMapTex = null;
@@ -183,18 +220,21 @@ var slider_light_x;
 var slider_light_y;
 var slider_light_z;
 var slider_light_intensity;
+// - water
+var nbMeshWater = 6;
+var slider_water_height;
 
 // Color map
 var colorMap = [];
 
 //--------------------------------------------------------------------------------------------------------
-// Build mesh FROM CORRECTION
+// Build terrain mesh FROM CORRECTION
 //--------------------------------------------------------------------------------------------------------
-function buildMesh()
+function buildTerrainMesh()
 {
 	gridSize = slider_terrainPrecision.value;
 
-	gl.deleteVertexArray(vao);
+	gl.deleteVertexArray(vaoTerrain);
 
 	// Create ande initialize a vertex buffer object (VBO) [it is a buffer of generic user data: positions, normals, texture coordinates, temperature, etc...]
 	// - create data on CPU
@@ -254,9 +294,9 @@ function buildMesh()
 	
 	// Create ande initialize a vertex array object (VAO) [it is a "container" of vertex buffer objects (VBO)]
 	// - create a VAO (kind of memory pointer or handle on GPU)
-	vao = gl.createVertexArray();
+	vaoTerrain = gl.createVertexArray();
 	// - bind "current" VAO
-	gl.bindVertexArray(vao);
+	gl.bindVertexArray(vaoTerrain);
 	// - bind "current" VBO
 	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions);
 	// - attach VBO to VAO
@@ -282,6 +322,49 @@ function buildMesh()
 }
 
 //--------------------------------------------------------------------------------------------------------
+// Build water mesh
+//--------------------------------------------------------------------------------------------------------
+function buildWaterMesh()
+{
+	let data_positions = new Float32Array(
+	    [-1.,-1., // (x0,y0)
+		  1.,-1., // (x1,y1)
+		  1., 1., // (x2,y2)
+		 -1., 1.] // (x3,y3)
+		);
+	
+	let vbo_positions = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions); 
+	gl.bufferData(gl.ARRAY_BUFFER, data_positions, gl.STATIC_DRAW);
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+	let ebo_data = new Uint32Array([0, 3, 1, 3, 1, 2]);
+	
+	let ebo = gl.createBuffer();
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+	gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, ebo_data, gl.STATIC_DRAW);
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+	
+	
+	vaoWater = gl.createVertexArray();
+	gl.bindVertexArray(vaoWater);
+	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions);
+	
+	let vertexAttributeID = 1;
+	let dataSize = 2; // 2 for 2D positions.
+	let dataType = gl.FLOAT; // data type
+	gl.vertexAttribPointer(vertexAttributeID, dataSize, dataType,
+	                        false, 0, 0);
+	gl.enableVertexAttribArray(vertexAttributeID);
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+	
+	// Reset GL states
+	gl.bindVertexArray(null);
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+}
+
+//--------------------------------------------------------------------------------------------------------
 // Initialize graphics objects and GL states
 //
 // Here, we want to display a square/rectangle on screen
@@ -297,10 +380,11 @@ function init_wgl()
 	UserInterface.begin();
 		// TERRAIN
 		UserInterface.use_field_set('H', "Terrain Generator");
-		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 100, 50, buildMesh);
+		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 100, 50, buildTerrainMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
+		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 10.0, 0.0, update_wgl);
 		UserInterface.end_use();
-
+		
 		// LIGHTING
 		UserInterface.use_field_set('H', "Lighting");
 
@@ -319,11 +403,12 @@ function init_wgl()
 	
 	// Create and initialize a shader program // [=> Sylvain's API - wrapper of GL code]
 	terrainShader = ShaderProgram(terrain_vert, terrain_frag, 'terrain shader');
+	waterShader = ShaderProgram(water_vert, water_frag, 'water shader');
 
-	// Build mesh
-	buildMesh();
-		// 1. Environnement map
-	// CubeMap texture creation
+	// Build meshes
+	buildTerrainMesh();
+	buildWaterMesh();
+	
 	envMapTex = TextureCubeMap();
 	envMapTex.load(["textures/skybox/skybox1/right2.bmp","textures/skybox/skybox1/left2.bmp",
 	"textures/skybox/skybox1/back2.bmp","textures/skybox/skybox1/front.bmp",
@@ -375,7 +460,7 @@ function draw_terrain()
 	Uniforms.uGridSize = gridSize;
 
 	// Bind "current" vertex array (VAO)
-	gl.bindVertexArray(vao);
+	gl.bindVertexArray(vaoTerrain);
 	
 	// Draw commands
 	// - use method "drawElements(mode, count, type, indices)"
@@ -385,6 +470,37 @@ function draw_terrain()
 	// - unbind vertex array
 	gl.bindVertexArray(null);
 	// - unbind shader program
+	gl.useProgram(null);
+}
+
+//--------------------------------------------------------------------------------------------------------
+// Render water
+//--------------------------------------------------------------------------------------------------------
+function draw_water()
+{
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+	waterShader.bind();
+
+	let viewMatrix = ewgl.scene_camera.get_view_matrix();
+	let modelMatrix = Matrix.scale(0.5);
+
+	// - camera
+	Uniforms.uProjectionMatrix = ewgl.scene_camera.get_projection_matrix();
+	Uniforms.uViewMatrix = viewMatrix;
+	// - model matrix
+	Uniforms.uModelMatrix = modelMatrix;
+	let mvm = Matrix.mult(viewMatrix, modelMatrix);
+	// - lighting
+	//Uniforms.uLightIntensity = slider_light_intensity.value/20;
+	//Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value)); // to get the position in the View space
+	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));				 // to get the position in world space
+	
+	Uniforms.uHeight = slider_water_height.value;
+
+	gl.bindVertexArray(vaoWater);
+	gl.drawArrays(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0);
+
+	gl.bindVertexArray(null);
 	gl.useProgram(null);
 }
 
@@ -399,6 +515,8 @@ function draw_wgl()
 	draw_skybox();
 
 	draw_terrain();
+
+	draw_water();
 }
 
 function init_color_map()
