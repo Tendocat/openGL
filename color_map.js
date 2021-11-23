@@ -59,26 +59,26 @@ float fbm (vec2 st) {
 
 // 'base' la position sans hauteur
 vec3 compute_normal(vec3 base) {
-	vec3 off = vec3(1.0/uGridSize, 1.0/uGridSize, 0.0);
-	float hR = fbm((base.xy + off.xz)) / uTerrainElevation;
-	float hL = fbm((base.xy - off.xz)) / uTerrainElevation;
-	float hD = fbm((base.xy - off.zy)) / uTerrainElevation;
-	float hU = fbm((base.xy + off.zy)) / uTerrainElevation;
+	vec3 off = vec3(1.0/uGridSize, 0.0, 1.0/uGridSize);
+	float hR = fbm((base.xz + off.xy)) / uTerrainElevation;
+	float hL = fbm((base.xz - off.xy)) / uTerrainElevation;
+	float hD = fbm((base.xz - off.yz)) / uTerrainElevation;
+	float hU = fbm((base.xz + off.yz)) / uTerrainElevation;
   
 	vec3 n;
 	n.x = hL - hR;
-	n.y = hD - hU;
-	n.z = 1.0/(uGridSize*2.0);
+	n.y = 1.0/(uGridSize*2.0);
+	n.z = hD - hU;
 	return normalize(n);
 }
 // MAIN PROGRAM
 void main()
 {
-	vec3 position = vec3(2.0 * position_in - 1.0, 0.0);
+	vec3 position = vec3(2.0 * position_in.x - 1.0, 0.0, 2.0 * position_in.y - 1.0);
 	vec3 baseForNormals = position;
 
-	position.z += fbm(position_in*5.) / uTerrainElevation;
-	height = position.z*180.;	// adapt to colormap length
+	position.y += fbm(position_in*5.) / uTerrainElevation;
+	height = position.y*180.;	// adapt to colormap length
 	
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
 	v_normal = (uViewMatrix * uModelMatrix * vec4(compute_normal(baseForNormals), 1.)).xyz;
@@ -176,7 +176,7 @@ uniform float uHeight;
 
 void main()
 {
-	vec3 position = vec3(position_in, uHeight);
+	vec3 position = vec3(position_in.x, uHeight, position_in.y);
 	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
 }  
 `;
@@ -236,11 +236,7 @@ function buildTerrainMesh()
 
 	gl.deleteVertexArray(vaoTerrain);
 
-	// Create ande initialize a vertex buffer object (VBO) [it is a buffer of generic user data: positions, normals, texture coordinates, temperature, etc...]
-	// - create data on CPU
-	// - this is the geometry of your object)
-	// - we store 2D positions as 1D array : (x0,y0,x1,y1,x2,y2,x3,y3)
-	// - for a terrain: a grid of 2D points in [0.0;1.0]
+
 	let data_positions = new Float32Array(gridSize * gridSize * 2);
 	for (let j = 0; j < gridSize; j++)
 	{
@@ -252,19 +248,11 @@ function buildTerrainMesh()
 			data_positions[ 2 * (i + j * gridSize) + 1 ] = j / (gridSize - 1);
 	    }
 	}
-	// - create a VBO (kind of memory pointer or handle on GPU)
 	let vbo_positions = gl.createBuffer();
-	// - bind "current" VBO
 	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions); 
-	// - allocate memory on GPU (size of data) and send data from CPU to GPU
 	gl.bufferData(gl.ARRAY_BUFFER, data_positions, gl.STATIC_DRAW);
-	// - reset GL state
 	gl.bindBuffer(gl.ARRAY_BUFFER, null);
-	
-	// Create ande initialize an element buffer object (EBO) [it is a buffer of generic user data: positions, normals, texture coordinates, temperature, etc...]
-	// - create data on CPU
-	// - this is the geometry of your object)
-	// - we store 2D position "indices" as 1D array of "triangle" indices : (i0,j0,k0, i1,j1,k1, i2,j2,k2, ...)
+
 	let nbMeshQuads = (gridSize - 1) * (gridSize - 1);
 	let nbMeshTriangles = 2 * nbMeshQuads;
 	nbMeshIndices = 3 * nbMeshTriangles;
@@ -287,9 +275,7 @@ function buildTerrainMesh()
 	}
 	let ebo = gl.createBuffer();
 	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
-	// - allocate memory on GPU (size of data) and send data from CPU to GPU
 	gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, ebo_data, gl.STATIC_DRAW);
-	// - reset GL state
 	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
 	
 	// Create ande initialize a vertex array object (VAO) [it is a "container" of vertex buffer objects (VBO)]
@@ -326,25 +312,24 @@ function buildTerrainMesh()
 //--------------------------------------------------------------------------------------------------------
 function buildWaterMesh()
 {
+	gl.deleteVertexArray(vaoWater);
 	let data_positions = new Float32Array(
-	    [-1.,-1., // (x0,y0)
-		  1.,-1., // (x1,y1)
-		  1., 1., // (x2,y2)
-		 -1., 1.] // (x3,y3)
+	    [-1,-1,
+		  1,-1,
+		  1, 1,
+		 -1, 1]
 		);
-	
 	let vbo_positions = gl.createBuffer();
 	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions); 
 	gl.bufferData(gl.ARRAY_BUFFER, data_positions, gl.STATIC_DRAW);
 	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
+
 	let ebo_data = new Uint32Array([0, 3, 1, 3, 1, 2]);
-	
 	let ebo = gl.createBuffer();
 	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
 	gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, ebo_data, gl.STATIC_DRAW);
 	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
-	
 	
 	vaoWater = gl.createVertexArray();
 	gl.bindVertexArray(vaoWater);
@@ -366,14 +351,9 @@ function buildWaterMesh()
 
 //--------------------------------------------------------------------------------------------------------
 // Initialize graphics objects and GL states
-//
-// Here, we want to display a square/rectangle on screen
-// Uniforms are used to be able edit GPU data with a customized GUI (graphical user interface)
 //--------------------------------------------------------------------------------------------------------
 function init_wgl()
 {
-	// ANIMATIONS // [=> Sylvain's API]
-	// - if animations, set this internal variable (it will refresh the window everytime)
 	ewgl.continuous_update = true;
 	
 	// CUSTOM USER INTERFACE
@@ -387,7 +367,6 @@ function init_wgl()
 		
 		// LIGHTING
 		UserInterface.use_field_set('H', "Lighting");
-
 		UserInterface.use_field_set('H', "Position");
 		slider_light_x  = UserInterface.add_slider('X ', -100, 100, 0, update_wgl);
 		UserInterface.set_widget_color(slider_light_x,'#ff0000','#ffcccc');
@@ -396,9 +375,9 @@ function init_wgl()
 		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, -100, update_wgl);
 		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
 		UserInterface.end_use();
-		
 		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 20, update_wgl);
 		UserInterface.end_use();
+
 	UserInterface.end();
 	
 	// Create and initialize a shader program // [=> Sylvain's API - wrapper of GL code]
@@ -410,9 +389,9 @@ function init_wgl()
 	buildWaterMesh();
 	
 	envMapTex = TextureCubeMap();
-	envMapTex.load(["textures/skybox/skybox1/right2.bmp","textures/skybox/skybox1/left2.bmp",
-	"textures/skybox/skybox1/back2.bmp","textures/skybox/skybox1/front.bmp",
-	"textures/skybox/skybox1/top.bmp","textures/skybox/skybox1/bottom.bmp"]).then(update_wgl);
+	envMapTex.load(["textures/skybox/skybox1/right.bmp","textures/skybox/skybox1/left.bmp",
+	"textures/skybox/skybox1/top.bmp","textures/skybox/skybox1/bottom.bmp",
+	"textures/skybox/skybox1/front.bmp","textures/skybox/skybox1/back.bmp"]).then(update_wgl);
 
 	envMapShader = ShaderProgram(skybox_vert,skybox_frag,'sky');
 	skybox_rend = Mesh.Cube().renderer(0, -1, -1);
@@ -453,8 +432,8 @@ function draw_terrain()
 	let mvm = Matrix.mult(viewMatrix, modelMatrix);
 	// - lighting
 	Uniforms.uLightIntensity = slider_light_intensity.value/20;
-	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value)); // to get the position in the View space
-	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));				 // to get the position in world space
+	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); // to get the position in the View space
+	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10));				 // to get the position in world space
 	// - terrain
 	Uniforms.ucolor_map = colorMap;
 	Uniforms.uGridSize = gridSize;
@@ -478,7 +457,7 @@ function draw_terrain()
 //--------------------------------------------------------------------------------------------------------
 function draw_water()
 {
-	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+	//gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 	waterShader.bind();
 
 	let viewMatrix = ewgl.scene_camera.get_view_matrix();
@@ -489,16 +468,16 @@ function draw_water()
 	Uniforms.uViewMatrix = viewMatrix;
 	// - model matrix
 	Uniforms.uModelMatrix = modelMatrix;
-	let mvm = Matrix.mult(viewMatrix, modelMatrix);
+	//let mvm = Matrix.mult(viewMatrix, modelMatrix);
 	// - lighting
 	//Uniforms.uLightIntensity = slider_light_intensity.value/20;
-	//Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value)); // to get the position in the View space
-	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));				 // to get the position in world space
+	//Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 			// to get the position in the View space
+	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 	// to get the position in world space
 	
-	Uniforms.uHeight = slider_water_height.value;
+	Uniforms.uHeight = slider_water_height.value/10;
 
 	gl.bindVertexArray(vaoWater);
-	gl.drawArrays(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0);
+	gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0);
 
 	gl.bindVertexArray(null);
 	gl.useProgram(null);
