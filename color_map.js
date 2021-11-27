@@ -74,10 +74,13 @@ vec3 compute_normal(vec3 base) {
 // MAIN PROGRAM
 void main()
 {
-	vec3 position = vec3(2.0 * position_in.x - 1.0, 0.0, 2.0 * position_in.y - 1.0);
-	vec3 baseForNormals = position;
+	vec2 realPosition = position_in;
+	realPosition.x += 0.;					// TODO bigger terrain surface
+	vec3 position = vec3(2.0 * realPosition.x - 1.0, 0.0, 2.0 * realPosition.y - 1.0);
 
-	position.y += fbm(position_in*5.) / uTerrainElevation;
+	vec3 baseForNormals = position;
+	position.y += fbm(realPosition*5.) / uTerrainElevation;
+
 	height = position.y*180.;	// adapt to colormap length
 	
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
@@ -166,6 +169,8 @@ var water_vert =
 
 // INPUT
 layout(location = 1) in vec2 position_in;
+layout(location = 2) in vec3 textureRefraction;
+layout(location = 3) in vec3 textureReflexion;
 
 // UNIFORM
 uniform mat4 uProjectionMatrix;
@@ -174,8 +179,19 @@ uniform mat4 uModelMatrix;
 
 uniform float uHeight;
 
+//OUTPUT
+out vec2 texCoord;
+
 void main()
-{
+{	
+	// Compute vertex position between [-1;1]
+	float x = -1.0 + float((gl_VertexID & 1) << 2); // If VertexID == 1 then x = 3 else x == -1
+	float y = -1.0 + float((gl_VertexID & 2) << 1); // If VertexID == 2 then y = 3 else y == -1
+	
+	// Compute texture coordinates between [0;1] (-1 * 0.5 + 0.5 = 0 and 1 * 0.5 + 0.5 = 1)
+	texCoord.x = x * 0.5 + 0.5;
+	texCoord.y = y * 0.5 + 0.5;
+
 	vec3 position = vec3(position_in.x, uHeight, position_in.y);
 	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
 }  
@@ -186,11 +202,62 @@ var water_frag =
 `#version 300 es
 precision highp float;
 
+// INPUT
+in vec2 texCoord;
+
+// UNIFORM
+uniform sampler2D uTexRefract;
+uniform sampler2D uTexReflect;
+
+// OUTPUT
 out vec4 oFragmentColor;
 
 void main()
 {	
 	oFragmentColor = vec4(1.,0.,0.,1.);
+}
+`;
+
+//--------------------------------------------------------------------------------------------------------
+// OFFSCREEN SHADER
+//--------------------------------------------------------------------------------------------------------
+var offscreen_vert =
+`#version 300 es
+
+// INPUT
+layout(location = 1) in vec2 position_in;
+
+// UNIFORM
+uniform mat4 uProjectionMatrix;
+uniform mat4 uViewMatrix;
+uniform mat4 uModelMatrix;
+
+uniform float uHeight;
+
+//OUTPUT
+out vec2 texCoord;
+
+void main()
+{	
+	vec3 position = vec3(position_in.x, uHeight, position_in.y);
+	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
+}  
+`;
+
+//--------------------------------------------------------------------------------------------------------
+var offscreen_frag =
+`#version 300 es
+precision highp float;
+
+in vec2 texCoord;
+
+layout(location = 0) out vec4 color_reflect;
+layout(location = 1) out vec4 color_refract;
+
+void main()
+{	
+	color_reflect = vec4(1.,0.,0.,1.);
+	color_refract = vec4(0.,1.,0.,1.);
 }
 `;
 
@@ -207,7 +274,6 @@ var vaoWater = null;
 var envMapShader = null;
 var envMapTex = null;
 var skybox_rend = null;
-var sl_refl = null;
 
 // GUI (graphical user interface)
 // Terrain
@@ -223,6 +289,13 @@ var slider_light_intensity;
 // - water
 var nbMeshWater = 6;
 var slider_water_height;
+// - fbo
+var fbo = null;
+var fboTexWidth = 1024;
+var fboTexHeight = 1024;
+var tex_reflect = null;
+var tex_refract = null;
+var offscreen_shaderProgram = null;
 
 // Color map
 var colorMap = [];
@@ -362,7 +435,7 @@ function init_wgl()
 		UserInterface.use_field_set('H', "Terrain Generator");
 		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 100, 50, buildTerrainMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
-		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 10.0, 0.0, update_wgl);
+		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 10.0, 4.0, update_wgl);
 		UserInterface.end_use();
 		
 		// LIGHTING
@@ -383,7 +456,7 @@ function init_wgl()
 	// Create and initialize a shader program // [=> Sylvain's API - wrapper of GL code]
 	terrainShader = ShaderProgram(terrain_vert, terrain_frag, 'terrain shader');
 	waterShader = ShaderProgram(water_vert, water_frag, 'water shader');
-
+	offscreen_shaderProgram = ShaderProgram(offscreen_vert, offscreen_frag, 'offscreen shader');
 	// Build meshes
 	buildTerrainMesh();
 	buildWaterMesh();
@@ -396,6 +469,52 @@ function init_wgl()
 	envMapShader = ShaderProgram(skybox_vert,skybox_frag,'sky');
 	skybox_rend = Mesh.Cube().renderer(0, -1, -1);
 	
+	// -------------------------------------------------------------------
+	// Offscreen Rendering for water : FBO
+	// -------------------------------------------------------------------
+
+	// I) Textures
+
+	const level = 0;
+	const internalFormat = gl.RGBA;
+	const border = 0;
+	const format = gl.RGBA;
+	const type = gl.UNSIGNED_BYTE;
+	const data = null;
+	// a) reflexion
+	tex_reflect = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, tex_reflect);
+	gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, fboTexWidth, fboTexHeight, border, format, type, data);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	// b) refraction
+	tex_refract = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, tex_refract);
+	gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, fboTexWidth, fboTexHeight, border, format, type, data);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+
+	gl.bindTexture(gl.TEXTURE_2D, null);
+
+
+	// II) FBO
+
+	fbo = gl.createFramebuffer();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex_reflect, 0);
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, tex_refract, 0);
+	
+	gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1])
+	
+	/*
+	var depthRenderBuffer = gl.createRenderbuffer();
+	gl.bindRenderbuffer(gl.RENDERBUFFER, depthRenderBuffer);
+	gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, fboTexWidth, fboTexHeight);
+	gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRenderBuffer);
+	gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+	*/
+
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
 	gl.enable(gl.DEPTH_TEST);
 }
@@ -483,12 +602,30 @@ function draw_water()
 	gl.useProgram(null);
 }
 
+function render_fbo()
+{
+	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+	gl.viewport(0, 0, fboTexWidth, fboTexHeight);
+	gl.clear(gl.COLOR_BUFFER_BIT);
+	
+	offscreen_shaderProgram.bind();
+
+	//Uniforms.time = ewgl.current_time;
+	gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+	// reset
+	gl.useProgram(null);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+	gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+}
+
 //--------------------------------------------------------------------------------------------------------
 // Render scene
 //--------------------------------------------------------------------------------------------------------
 function draw_wgl()
 {
-	gl.clearColor(0, 0, 0, 0);
+	render_fbo();
+	
 	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
 	draw_skybox();
