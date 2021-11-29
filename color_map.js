@@ -1,4 +1,3 @@
-
 "use strict"
 
 //--------------------------------------------------------------------------------------------------------
@@ -81,12 +80,14 @@ void main()
 	vec3 baseForNormals = position;
 	position.y += fbm(realPosition*5.) / uTerrainElevation;
 
-	height = position.y*180.;	// adapt to colormap length
+	height = position.y;
 	
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
 	v_normal = (uViewMatrix * uModelMatrix * vec4(compute_normal(baseForNormals), 1.)).xyz;
+	
+	vec4 proj = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
 
-	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
+	gl_Position = proj;
 }
 `;
 
@@ -109,14 +110,23 @@ out vec4 oFragmentColor;
 uniform vec4 ucolor_map[255];
 uniform float uLightIntensity;
 uniform vec3 uLightPosition;
+uniform float uWaterHeight;
+uniform int uMode;
 
 // MAIN PROGRAM
 void main()
 {
+	if (uMode == 1 && height >= uWaterHeight + 0.1) {
+		discard;
+	}
+	if (uMode == 2 && height < uWaterHeight) {
+		discard;
+	}
+	
 	vec3 n = normalize(v_normal);
 
 	// AMBIANT
-	vec3 Ka = ucolor_map[int(height)].xyz;
+	vec3 Ka = ucolor_map[int(height*180.)].xyz;	// adapt to colormap length
 	vec3 Ia = uLightIntensity * Ka;
 
 	// DIFFUS
@@ -143,7 +153,7 @@ void main()
 {
 	tex_coord = position_in;
 	gl_Position = uProjectionViewMatrix * vec4(position_in, 1.0);
-}  
+}
 `;
 
 //--------------------------------------------------------------------------------------------------------
@@ -156,7 +166,7 @@ out vec4 oFragmentColor;
 uniform samplerCube TU;
 
 void main()
-{	
+{
 	oFragmentColor = texture(TU, tex_coord);
 }
 `;
@@ -169,8 +179,6 @@ var water_vert =
 
 // INPUT
 layout(location = 1) in vec2 position_in;
-layout(location = 2) in vec3 textureRefraction;
-layout(location = 3) in vec3 textureReflexion;
 
 // UNIFORM
 uniform mat4 uProjectionMatrix;
@@ -180,21 +188,19 @@ uniform mat4 uModelMatrix;
 uniform float uHeight;
 
 //OUTPUT
-out vec2 texCoord;
+out vec4 cliping;	// for refract & reflect
+out vec2 texCoord;	// for maping textures
 
 void main()
-{	
-	// Compute vertex position between [-1;1]
-	float x = -1.0 + float((gl_VertexID & 1) << 2); // If VertexID == 1 then x = 3 else x == -1
-	float y = -1.0 + float((gl_VertexID & 2) << 1); // If VertexID == 2 then y = 3 else y == -1
-	
-	// Compute texture coordinates between [0;1] (-1 * 0.5 + 0.5 = 0 and 1 * 0.5 + 0.5 = 1)
-	texCoord.x = x * 0.5 + 0.5;
-	texCoord.y = y * 0.5 + 0.5;
-
+{
 	vec3 position = vec3(position_in.x, uHeight, position_in.y);
-	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
-}  
+
+	texCoord = position_in + 2.;
+    texCoord = texCoord * 1.;
+	vec4 proj = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.);
+	cliping = proj;
+	gl_Position = proj;
+}
 `;
 
 //--------------------------------------------------------------------------------------------------------
@@ -203,63 +209,24 @@ var water_frag =
 precision highp float;
 
 // INPUT
+in vec4 cliping;
 in vec2 texCoord;
 
 // UNIFORM
 uniform sampler2D uTexRefract;
-uniform sampler2D uTexReflect;
 
 // OUTPUT
 out vec4 oFragmentColor;
 
 void main()
-{	
-	oFragmentColor = vec4(1.,0.,0.,1.);
+{
+	vec2 ndc = (cliping.xy/cliping.w)*.5 + .5;
+	vec2 refractTexCoords = clamp(ndc, 0., 1.);
+	vec4 refractColor = texture(uTexRefract, refractTexCoords);
+	oFragmentColor = refractColor;
 }
 `;
 
-//--------------------------------------------------------------------------------------------------------
-// OFFSCREEN SHADER
-//--------------------------------------------------------------------------------------------------------
-var offscreen_vert =
-`#version 300 es
-
-// INPUT
-layout(location = 1) in vec2 position_in;
-
-// UNIFORM
-uniform mat4 uProjectionMatrix;
-uniform mat4 uViewMatrix;
-uniform mat4 uModelMatrix;
-
-uniform float uHeight;
-
-//OUTPUT
-out vec2 texCoord;
-
-void main()
-{	
-	vec3 position = vec3(position_in.x, uHeight, position_in.y);
-	gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.0);
-}  
-`;
-
-//--------------------------------------------------------------------------------------------------------
-var offscreen_frag =
-`#version 300 es
-precision highp float;
-
-in vec2 texCoord;
-
-layout(location = 0) out vec4 color_reflect;
-layout(location = 1) out vec4 color_refract;
-
-void main()
-{	
-	color_reflect = vec4(1.,0.,0.,1.);
-	color_refract = vec4(0.,1.,0.,1.);
-}
-`;
 
 //--------------------------------------------------------------------------------------------------------
 // Global variables
@@ -290,12 +257,12 @@ var slider_light_intensity;
 var nbMeshWater = 6;
 var slider_water_height;
 // - fbo
-var fbo = null;
 var fboTexWidth = 1024;
 var fboTexHeight = 1024;
-var tex_reflect = null;
+var fbo_refract = null;
 var tex_refract = null;
-var offscreen_shaderProgram = null;
+var fbo_reflect = null;
+var tex_reflect = null;
 
 // Color map
 var colorMap = [];
@@ -456,7 +423,7 @@ function init_wgl()
 	// Create and initialize a shader program // [=> Sylvain's API - wrapper of GL code]
 	terrainShader = ShaderProgram(terrain_vert, terrain_frag, 'terrain shader');
 	waterShader = ShaderProgram(water_vert, water_frag, 'water shader');
-	offscreen_shaderProgram = ShaderProgram(offscreen_vert, offscreen_frag, 'offscreen shader');
+
 	// Build meshes
 	buildTerrainMesh();
 	buildWaterMesh();
@@ -473,24 +440,13 @@ function init_wgl()
 	// Offscreen Rendering for water : FBO
 	// -------------------------------------------------------------------
 
-	// I) Textures
+	// I) Texture
 
 	const level = 0;
-	const internalFormat = gl.RGBA;
-	const border = 0;
-	const format = gl.RGBA;
 	const type = gl.UNSIGNED_BYTE;
-	const data = null;
-	// a) reflexion
-	tex_reflect = gl.createTexture();
-	gl.bindTexture(gl.TEXTURE_2D, tex_reflect);
-	gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, fboTexWidth, fboTexHeight, border, format, type, data);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	// b) refraction
 	tex_refract = gl.createTexture();
 	gl.bindTexture(gl.TEXTURE_2D, tex_refract);
-	gl.texImage2D(gl.TEXTURE_2D, level, internalFormat, fboTexWidth, fboTexHeight, border, format, type, data);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, fboTexWidth, fboTexHeight, 0, gl.RGBA, type, null);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 
@@ -499,20 +455,19 @@ function init_wgl()
 
 	// II) FBO
 
-	fbo = gl.createFramebuffer();
-	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex_reflect, 0);
-	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, tex_refract, 0);
+	fbo_refract = gl.createFramebuffer();
+	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo_refract);
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex_refract, 0);
 	
-	gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1])
+	gl.drawBuffers([gl.COLOR_ATTACHMENT0])
 	
-	/*
-	var depthRenderBuffer = gl.createRenderbuffer();
+	
+	let depthRenderBuffer = gl.createRenderbuffer();
 	gl.bindRenderbuffer(gl.RENDERBUFFER, depthRenderBuffer);
 	gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, fboTexWidth, fboTexHeight);
 	gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRenderBuffer);
 	gl.bindRenderbuffer(gl.RENDERBUFFER, null);
-	*/
+	
 
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -535,7 +490,7 @@ function draw_skybox()
 //--------------------------------------------------------------------------------------------------------
 // Render terrain
 //--------------------------------------------------------------------------------------------------------
-function draw_terrain()
+function draw_terrain(mode)
 {
 	terrainShader.bind();
 
@@ -556,6 +511,8 @@ function draw_terrain()
 	// - terrain
 	Uniforms.ucolor_map = colorMap;
 	Uniforms.uGridSize = gridSize;
+	Uniforms.uWaterHeight = slider_water_height.value/10;
+	Uniforms.uMode = mode;
 
 	// Bind "current" vertex array (VAO)
 	gl.bindVertexArray(vaoTerrain);
@@ -576,7 +533,6 @@ function draw_terrain()
 //--------------------------------------------------------------------------------------------------------
 function draw_water()
 {
-	//gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 	waterShader.bind();
 
 	let viewMatrix = ewgl.scene_camera.get_view_matrix();
@@ -587,6 +543,10 @@ function draw_water()
 	Uniforms.uViewMatrix = viewMatrix;
 	// - model matrix
 	Uniforms.uModelMatrix = modelMatrix;
+
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_2D, tex_refract);
+
 	//let mvm = Matrix.mult(viewMatrix, modelMatrix);
 	// - lighting
 	//Uniforms.uLightIntensity = slider_light_intensity.value/20;
@@ -602,19 +562,30 @@ function draw_water()
 	gl.useProgram(null);
 }
 
+/*
+dupliquer pour refract / reflect
+appeler les shader terrain/skybox direct en mode "screenshot"
+
+normalize divize coordinate (~xy/w)
+*/
 function render_fbo()
 {
-	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo_refract);
 	gl.viewport(0, 0, fboTexWidth, fboTexHeight);
-	gl.clear(gl.COLOR_BUFFER_BIT);
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 	
-	offscreen_shaderProgram.bind();
+	// I) refract
+	draw_skybox();
+	draw_terrain(1);
 
-	//Uniforms.time = ewgl.current_time;
-	gl.drawArrays(gl.TRIANGLES, 0, 3);
+	// II) reflect
+	//draw_terrain(2);
+	//draw_skybox();
+
 
 	// reset
 	gl.useProgram(null);
+	
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 	gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 }
@@ -624,14 +595,13 @@ function render_fbo()
 //--------------------------------------------------------------------------------------------------------
 function draw_wgl()
 {
-	render_fbo();
-	
 	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
 	draw_skybox();
 
-	draw_terrain();
+	draw_terrain(0);
 
+	render_fbo();
 	draw_water();
 }
 
