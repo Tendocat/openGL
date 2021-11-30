@@ -15,6 +15,7 @@ uniform mat4 uViewMatrix;
 uniform mat4 uModelMatrix;
 
 uniform float uTerrainElevation;
+uniform float uGridPrecision;
 uniform float uGridSize;
 
 uniform float uWaterHeight;
@@ -70,7 +71,7 @@ float fbm (vec2 st) {
 
 // 'base' la position sans hauteur
 vec3 compute_normal(vec3 base) {
-	vec3 off = vec3(1.0/uGridSize, 0.0, 1.0/uGridSize);
+	vec3 off = vec3(uGridSize/uGridPrecision, 0.0, uGridSize/uGridPrecision);
 	float hR = fbm(base.xz + off.xy);
 	float hL = fbm(base.xz - off.xy);
 	float hD = fbm(base.xz - off.yz);
@@ -78,19 +79,17 @@ vec3 compute_normal(vec3 base) {
   
 	vec3 n;
 	n.x = hL - hR;
-	n.y = 1.0/(uGridSize*2.0);
+	n.y = uGridSize/(uGridPrecision*2.0);
 	n.z = hD - hU;
 	return normalize(n);
 }
 // MAIN PROGRAM
 void main()	//Hc − 2 ∗ (Hc − Hw)
 {
-	vec2 realPosition = position_in;
-	realPosition.x += 0.;					// TODO bigger terrain surface
-	vec3 position = vec3(2.0 * realPosition.x - 1.0, 0.0, 2.0 * realPosition.y - 1.0);
+	vec3 position = vec3(2.0 * position_in.x - 1.0, 0.0, 2.0 * position_in.y - 1.0);
 
 	vec3 baseForNormals = position;
-	position.y += fbm(realPosition*5.);
+	position.y += fbm(position_in*5.);
 
 	if (uMode == 2) {
 		height = position.y - 2.*(position.y - uWaterHeight);
@@ -318,9 +317,11 @@ var skybox_rend = null;
 
 // GUI (graphical user interface)
 // Terrain
-var gridSize = 10;
+var gridPrecision = 10;
+var gridSize = 1;
 var nbMeshIndices = 0;
 var slider_terrainPrecision;
+var slider_terrainSize;
 var slider_terrainElevation;
 // - lighting
 var slider_light_x;
@@ -348,20 +349,22 @@ var colorMap = [];
 //--------------------------------------------------------------------------------------------------------
 function buildTerrainMesh()
 {
-	gridSize = slider_terrainPrecision.value;
+	gridSize = slider_terrainSize.value;
+	gridPrecision = slider_terrainPrecision.value;
+	ewgl.scene_camera.set_scene_radius(20);
 
 	gl.deleteVertexArray(vaoTerrain);
 
 
-	let data_positions = new Float32Array(gridSize * gridSize * 2);
-	for (let j = 0; j < gridSize; j++)
+	let data_positions = new Float32Array(gridPrecision * gridPrecision * 2);
+	for (let j = 0; j < gridPrecision; j++)
 	{
-	    for (let i = 0; i < gridSize; i++)
+	    for (let i = 0; i < gridPrecision; i++)
 	    {
 			// x
-			data_positions[ 2 * (i + j * gridSize) ] = i / (gridSize - 1);
+			data_positions[ 2 * (i + j * gridPrecision) ] = gridSize * i / (gridPrecision - 1.) - gridSize/2;
 			// y
-			data_positions[ 2 * (i + j * gridSize) + 1 ] = j / (gridSize - 1);
+			data_positions[ 2 * (i + j * gridPrecision) + 1 ] = gridSize * j / (gridPrecision - 1.) - gridSize/2;
 	    }
 	}
 	let vbo_positions = gl.createBuffer();
@@ -369,23 +372,23 @@ function buildTerrainMesh()
 	gl.bufferData(gl.ARRAY_BUFFER, data_positions, gl.STATIC_DRAW);
 	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
-	let nbMeshQuads = (gridSize - 1) * (gridSize - 1);
+	let nbMeshQuads = (gridPrecision - 1) * (gridPrecision - 1);
 	let nbMeshTriangles = 2 * nbMeshQuads;
 	nbMeshIndices = 3 * nbMeshTriangles;
 	let ebo_data = new Uint32Array(nbMeshIndices);
 	let current_quad = 0;
-	for (let j = 0; j < gridSize - 1; j++)
+	for (let j = 0; j < gridPrecision - 1; j++)
 	{
-	    for (let i = 0; i < gridSize - 1; i++)
+	    for (let i = 0; i < gridPrecision - 1; i++)
 	    {
 		   	// triangle 1
-			ebo_data[ 6 * current_quad ] = i + j * gridSize;
-			ebo_data[ 6 * current_quad + 1 ] = (i + 1) + j * gridSize;
-			ebo_data[ 6 * current_quad + 2 ] = i + (j + 1) * gridSize;
+			ebo_data[ 6 * current_quad ] = i + j * gridPrecision;
+			ebo_data[ 6 * current_quad + 1 ] = (i + 1) + j * gridPrecision;
+			ebo_data[ 6 * current_quad + 2 ] = i + (j + 1) * gridPrecision;
 			// triangle 2
-			ebo_data[ 6 * current_quad + 3 ] = i + (j + 1) * gridSize;
-			ebo_data[ 6 * current_quad + 4 ] = (i + 1) + j * gridSize;
-			ebo_data[ 6 * current_quad + 5 ] = (i + 1) + (j + 1) * gridSize;
+			ebo_data[ 6 * current_quad + 3 ] = i + (j + 1) * gridPrecision;
+			ebo_data[ 6 * current_quad + 4 ] = (i + 1) + j * gridPrecision;
+			ebo_data[ 6 * current_quad + 5 ] = (i + 1) + (j + 1) * gridPrecision;
 			current_quad++;
 		}
 	}
@@ -418,8 +421,9 @@ function buildTerrainMesh()
 	gl.bindVertexArray(null);
 	gl.bindBuffer(gl.ARRAY_BUFFER, null); // BEWARE: only unbind the VBO after unbinding the VAO !
 	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null); // BEWARE: only unbind the EBO after unbinding the VAO !
-
+	
 	// HACK...
+	buildWaterMesh();
 	update_wgl();
 }
 
@@ -430,10 +434,10 @@ function buildWaterMesh()
 {
 	gl.deleteVertexArray(vaoWater);
 	let data_positions = new Float32Array(
-	    [-1,-1,
-		  1,-1,
-		  1, 1,
-		 -1, 1]
+	    [-1000,-1000,
+		  1000,-1000,
+		  1000, 1000,
+		 -1000, 1000]
 		);
 	let vbo_positions = gl.createBuffer();
 	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions); 
@@ -471,14 +475,14 @@ function buildWaterMesh()
 function init_wgl()
 {
 	ewgl.continuous_update = true;
-	
 	// CUSTOM USER INTERFACE
 	UserInterface.begin();
 		// TERRAIN
 		UserInterface.use_field_set('H', "Terrain Generator");
-		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 100, 50, buildTerrainMesh);
+		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 500, 50, buildTerrainMesh);
+		slider_terrainSize = UserInterface.add_slider('Size', 1, 30, 1, buildTerrainMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
-		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 10.0, 4.0, update_wgl);
+		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 100.0, 40.0, update_wgl);
 		UserInterface.end_use();
 		
 		// LIGHTING
@@ -502,7 +506,6 @@ function init_wgl()
 
 	// Build meshes
 	buildTerrainMesh();
-	buildWaterMesh();
 	
 	envMapTex = TextureCubeMap();
 	envMapTex.load(["textures/skybox/skybox1/right.bmp","textures/skybox/skybox1/left.bmp",
@@ -645,8 +648,9 @@ function draw_terrain(mode)
 	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10));				 // to get the position in world space
 	// - terrain
 	Uniforms.ucolor_map = colorMap;
+	Uniforms.uGridPrecision = gridPrecision;
 	Uniforms.uGridSize = gridSize;
-	Uniforms.uWaterHeight = slider_water_height.value/10;
+	Uniforms.uWaterHeight = slider_water_height.value/100;
 	Uniforms.uMode = mode;
 
 	// Bind "current" vertex array (VAO)
@@ -701,7 +705,7 @@ function draw_water()
 	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 			// to get the position in the View space
 	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 	// to get the position in world space
 	
-	Uniforms.uHeight = slider_water_height.value/10;
+	Uniforms.uHeight = slider_water_height.value/100;
 	Uniforms.uTime = ewgl.current_time;
 
 	gl.bindVertexArray(vaoWater);
