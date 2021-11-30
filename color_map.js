@@ -139,19 +139,19 @@ void main()
 	if (t_mode == 1 && height >= t_waterHeight + 0.1) {
 		discard;
 	}
-	if (t_mode == 2 && height <= t_waterHeight) {
+	if (t_mode == 2 && height <= t_waterHeight - 0.004) {
 		discard;
 	}
 	
 	vec3 n = normalize(v_normal);
-
+	float lightIntensity = uLightIntensity *.5;	// better less
 	// AMBIANT
-	vec3 Ka = ucolor_map[int(height*180.)].xyz;	// adapt to colormap length
-	vec3 Ia = uLightIntensity * Ka;
+	vec3 Ka = ucolor_map[int(height*178.)].xyz;	// adapt to colormap length
+	vec3 Ia = lightIntensity * Ka;
 
 	// DIFFUS
 	vec3 lightDir = normalize(uLightPosition - v_position);
-	vec3 Id = uLightIntensity * Ka * max(0.0, dot(n, lightDir));
+	vec3 Id = lightIntensity * Ka * max(0.0, dot(n, lightDir));
 	Id = Id / M_PI;
 
 	oFragmentColor = vec4(Ia*.5 + Id*.5, 1.);
@@ -217,12 +217,15 @@ uniform float uHeight;
 //OUTPUT
 out vec4 cliping;	// for refract & reflect
 out vec2 texCoord;	// for maping textures
+out vec3 v_position;
 
 void main()
 {
 	vec3 position = vec3(position_in.x, uHeight, position_in.y);
-
+	
 	texCoord = (position_in + .5)* 4.;
+
+	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
 
 	vec4 proj = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.);
 	cliping = proj;
@@ -234,10 +237,12 @@ void main()
 var water_frag =
 `#version 300 es
 precision highp float;
+#define M_PI 3.14159265358979
 
 // INPUT
 in vec4 cliping;
 in vec2 texCoord;
+in vec3 v_position;
 
 // UNIFORM
 uniform float uTime;
@@ -247,21 +252,52 @@ uniform sampler2D uTexReflect;
 uniform sampler2D uTexDistorsion;
 uniform sampler2D uTexNormal;
 
+uniform float uLightIntensity;
+uniform vec3 uLightPosition;
 // OUTPUT
 out vec4 oFragmentColor;
 
 void main()
 {
-	vec2 distortedTexCoord = vec2(texCoord.x + mod(uTime, 4.) * 0.03, texCoord.y);
+	vec2 distortedTexCoord = vec2(texCoord.x + mod(uTime, 20.)*.05, texCoord.y);
 	vec4 distorsion = texture(uTexDistorsion, distortedTexCoord);
 	vec2 ndc = (cliping.xy/cliping.w)*.5 + .5;
-	ndc += vec2(distorsion.x, distorsion.y + mod(uTime, 4.) * 0.03);
+	ndc += vec2(distorsion.x, distorsion.y)*0.01;
 	vec2 refractTexCoords = clamp(ndc, 0., 1.);
 
 	vec4 refractColor = texture(uTexRefract, refractTexCoords);
 	vec4 relectColor = texture(uTexReflect, refractTexCoords);
 
-	oFragmentColor = mix(refractColor, relectColor, .5);
+	vec4 raleColor = mix(refractColor, relectColor, .5);
+
+	// LIGHTING
+	vec3 normal = texture(uTexNormal, distortedTexCoord*2.-1.).xzy;
+	vec3 n = normalize(normal);
+
+	// AMBIANT
+	vec3 Ka = raleColor.xyz;
+	vec3 Ia = uLightIntensity * Ka;
+
+	// DIFFUS
+	vec3 lightDir = normalize(uLightPosition - v_position);
+	float diffuseTerm = dot(n, lightDir);
+	vec3 Id = uLightIntensity * Ka * max(0.0, diffuseTerm);
+	Id = Id / M_PI;
+
+	float uNs = 50.;
+
+	// SPECULAIRE
+	vec3 Is = vec3(0.0);
+	if (diffuseTerm > 0.0)
+	{
+		vec3 viewDir = normalize(-v_position.xyz);
+		vec3 halfDir = normalize(viewDir + lightDir);
+		float specularTerm = max(0.0, pow(dot(n, halfDir), uNs));
+		Is = uLightIntensity * vec3(4.4,2.,1.3) * vec3(specularTerm);
+		Is /= (uNs + 2.0) / (2.0 * M_PI);
+	}
+
+	oFragmentColor = vec4((0.3 * Ia) + (0.3 * Id) + (0.3 * Is), 1.);
 }
 `;
 
@@ -297,8 +333,8 @@ var slider_water_height;
 var tex_distorsion = null;
 var tex_normal = null;
 // - fbo
-var fboTexWidth = 1024;
-var fboTexHeight = 1024;
+var fboTexWidth = 2048;
+var fboTexHeight = 2048;
 var fbo_refract = null;
 var tex_refract = null;
 var fbo_reflect = null;
@@ -455,7 +491,7 @@ function init_wgl()
 		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, -100, update_wgl);
 		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
 		UserInterface.end_use();
-		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 20, update_wgl);
+		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 40, update_wgl);
 		UserInterface.end_use();
 
 	UserInterface.end();
@@ -541,7 +577,7 @@ function init_wgl()
 	// Distorsion and normal map texture for water
 	// -------------------------------------------------------------------
 
-	// I) Texture
+	// I) Textures
 	
 	tex_distorsion = gl.createTexture();
 	const imageDistorsion = new Image();
@@ -549,6 +585,20 @@ function init_wgl()
     imageDistorsion.onload = () => {
 		gl.bindTexture(gl.TEXTURE_2D, tex_distorsion);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imageDistorsion);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+
+		gl.bindTexture(gl.TEXTURE_2D, null);
+	}
+
+	tex_normal = gl.createTexture();
+	const imageNormal = new Image();
+	imageNormal.src = 'textures/normal_map.png';
+    imageNormal.onload = () => {
+		gl.bindTexture(gl.TEXTURE_2D, tex_normal);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imageNormal);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -639,16 +689,20 @@ function draw_water()
 
 	gl.activeTexture(gl.TEXTURE2);
 	gl.bindTexture(gl.TEXTURE_2D, tex_distorsion);
-	// - set uniform
 	Uniforms.uTexDistorsion = 2;
-	Uniforms.uTime = ewgl.current_time;
-	//let mvm = Matrix.mult(viewMatrix, modelMatrix);
+
+	gl.activeTexture(gl.TEXTURE3);
+	gl.bindTexture(gl.TEXTURE_2D, tex_normal);
+	Uniforms.uTexNormal = 3;
+
+	let mvm = Matrix.mult(viewMatrix, modelMatrix);
 	// - lighting
-	//Uniforms.uLightIntensity = slider_light_intensity.value/20;
-	//Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 			// to get the position in the View space
+	Uniforms.uLightIntensity = slider_light_intensity.value/20;
+	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 			// to get the position in the View space
 	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 	// to get the position in world space
 	
 	Uniforms.uHeight = slider_water_height.value/10;
+	Uniforms.uTime = ewgl.current_time;
 
 	gl.bindVertexArray(vaoWater);
 	gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, 0);
