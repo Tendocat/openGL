@@ -210,13 +210,14 @@ layout(location = 1) in vec2 position_in;
 uniform mat4 uProjectionMatrix;
 uniform mat4 uViewMatrix;
 uniform mat4 uModelMatrix;
-
 uniform float uHeight;
+uniform vec3 uCameraPosition;
 
 //OUTPUT
 out vec4 cliping;	// for refract & reflect
 out vec2 texCoord;	// for maping textures
 out vec3 v_position;
+out vec3 v_fragmentToCamera;
 
 void main()
 {
@@ -225,6 +226,8 @@ void main()
 	texCoord = (position_in + .5)* 4.;
 
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
+
+	v_fragmentToCamera = uCameraPosition - (uModelMatrix * vec4(position, 1.)).xyz;
 
 	vec4 proj = uProjectionMatrix * uViewMatrix * uModelMatrix * vec4(position, 1.);
 	cliping = proj;
@@ -242,6 +245,7 @@ precision highp float;
 in vec4 cliping;
 in vec2 texCoord;
 in vec3 v_position;
+in vec3 v_fragmentToCamera;
 
 // UNIFORM
 uniform float uTime;
@@ -262,16 +266,22 @@ void main()
 	vec4 distorsion = texture(uTexDistorsion, distortedTexCoord);
 	vec2 ndc = (cliping.xy/cliping.w)*.5 + .5;
 	ndc += vec2(distorsion.x, distorsion.y)*0.01;
-	vec2 refractTexCoords = clamp(ndc, 0., 1.);
+	vec2 refractTexCoords = clamp(ndc, 0.0001, .9999);
 
 	vec4 refractColor = texture(uTexRefract, refractTexCoords);
 	vec4 relectColor = texture(uTexReflect, refractTexCoords);
+	
+	vec3 normal = texture(uTexNormal, distortedTexCoord*2.-1.).xzy;
+	normal = normalize(normal);
 
-	vec4 raleColor = mix(refractColor, relectColor, .5);
+	vec3 toCamera = normalize(v_fragmentToCamera);
+
+    // Fresnel Effect. Looking at the water from above makes the water more transparent.
+    float fresnel = 1. - dot(toCamera, normal);
+
+	vec4 raleColor = mix(refractColor, relectColor, fresnel);
 
 	// LIGHTING
-	vec3 normal = texture(uTexNormal, distortedTexCoord*2.-1.).xzy;
-	vec3 n = normalize(normal);
 
 	// AMBIANT
 	vec3 Ka = raleColor.xyz;
@@ -279,11 +289,11 @@ void main()
 
 	// DIFFUS
 	vec3 lightDir = normalize(uLightPosition - v_position);
-	float diffuseTerm = dot(n, lightDir);
+	float diffuseTerm = dot(normal, lightDir);
 	vec3 Id = uLightIntensity * Ka * max(0.0, diffuseTerm);
 	Id = Id / M_PI;
 
-	float uNs = 50.;
+	float uNs = 40.;
 
 	// SPECULAIRE
 	vec3 Is = vec3(0.0);
@@ -291,7 +301,7 @@ void main()
 	{
 		vec3 viewDir = normalize(-v_position.xyz);
 		vec3 halfDir = normalize(viewDir + lightDir);
-		float specularTerm = max(0.0, pow(dot(n, halfDir), uNs));
+		float specularTerm = max(0.0, pow(dot(normal, halfDir), uNs));
 		Is = uLightIntensity * vec3(4.4,2.,1.3) * vec3(specularTerm);
 		Is /= (uNs + 2.0) / (2.0 * M_PI);
 	}
@@ -343,6 +353,7 @@ var tex_reflect = null;
 
 // Color map
 var colorMap = [];
+var modelMatrix = Matrix.scale(1);
 
 //--------------------------------------------------------------------------------------------------------
 // Build terrain mesh FROM CORRECTION
@@ -357,6 +368,7 @@ function buildTerrainMesh()
 
 
 	let data_positions = new Float32Array(gridPrecision * gridPrecision * 2);
+	
 	for (let j = 0; j < gridPrecision; j++)
 	{
 	    for (let i = 0; i < gridPrecision; i++)
@@ -440,7 +452,7 @@ function buildWaterMesh()
 		 -1000, 1000]
 		);
 	let vbo_positions = gl.createBuffer();
-	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions); 
+	gl.bindBuffer(gl.ARRAY_BUFFER, vbo_positions);
 	gl.bufferData(gl.ARRAY_BUFFER, data_positions, gl.STATIC_DRAW);
 	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
@@ -633,7 +645,6 @@ function draw_terrain(mode)
 	terrainShader.bind();
 
 	let viewMatrix = ewgl.scene_camera.get_view_matrix();
-	let modelMatrix = Matrix.scale(0.5);
 
 	Uniforms.uTerrainElevation = slider_terrainElevation.value*0.2;
 	// - camera
@@ -644,8 +655,7 @@ function draw_terrain(mode)
 	let mvm = Matrix.mult(viewMatrix, modelMatrix);
 	// - lighting
 	Uniforms.uLightIntensity = slider_light_intensity.value/20;
-	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); // to get the position in the View space
-	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10));				 // to get the position in world space
+	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));
 	// - terrain
 	Uniforms.ucolor_map = colorMap;
 	Uniforms.uGridPrecision = gridPrecision;
@@ -675,7 +685,6 @@ function draw_water()
 	waterShader.bind();
 
 	let viewMatrix = ewgl.scene_camera.get_view_matrix();
-	let modelMatrix = Matrix.scale(0.5);
 
 	// - camera
 	Uniforms.uProjectionMatrix = ewgl.scene_camera.get_projection_matrix();
@@ -702,9 +711,10 @@ function draw_water()
 	let mvm = Matrix.mult(viewMatrix, modelMatrix);
 	// - lighting
 	Uniforms.uLightIntensity = slider_light_intensity.value/20;
-	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 			// to get the position in the View space
-	//Uniforms.uLightPosition = modelMatrix.transform(Vec3(slider_light_x.value/10, slider_light_y.value/10, slider_light_z.value/10)); 	// to get the position in world space
+	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));
 	
+	var cameraInfo = ewgl.scene_camera.get_look_info();
+	Uniforms.uCameraPosition = cameraInfo[0];
 	Uniforms.uHeight = slider_water_height.value/100;
 	Uniforms.uTime = ewgl.current_time;
 
