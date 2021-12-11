@@ -223,7 +223,7 @@ void main()
 {
 	vec3 position = vec3(position_in.x, uHeight, position_in.y);
 	
-	texCoord = (position_in + .5)* 4.;
+	texCoord = (position_in + .5)* 2.;
 
 	v_position = (uViewMatrix * uModelMatrix * vec4(position, 1.0)).xyz;
 
@@ -260,9 +260,16 @@ uniform vec3 uLightPosition;
 // OUTPUT
 out vec4 oFragmentColor;
 
+float rand (vec2 _st) {
+    return fract(sin(dot(_st.xy, vec2(12.9898,78.233))) * 437358.5453123);
+}
+
 void main()
 {
-	vec2 distortedTexCoord = vec2(texCoord.x + mod(uTime, 20.)*.05, texCoord.y);
+	vec2 uv = texCoord*2.-1.;
+	float noise = rand(uv)*.005;
+	vec2 distortedTexCoord = noise+vec2(uv.x + mod(uTime+texCoord.x*sin(uTime)*.2, 20.)*.05, uv.y + mod(texCoord.y*cos(uTime)*.2, 20.)*.05); // vagues très simples
+	
 	vec4 distorsion = texture(uTexDistorsion, distortedTexCoord);
 	vec2 ndc = (cliping.xy/cliping.w)*.5 + .5;
 	ndc += vec2(distorsion.x, distorsion.y)*0.01;
@@ -271,7 +278,7 @@ void main()
 	vec4 refractColor = texture(uTexRefract, refractTexCoords);
 	vec4 relectColor = texture(uTexReflect, refractTexCoords);
 	
-	vec3 normal = texture(uTexNormal, distortedTexCoord*2.-1.).xzy;
+	vec3 normal = texture(uTexNormal, distortedTexCoord).xzy;
 	normal = normalize(normal);
 
 	vec3 toCamera = normalize(v_fragmentToCamera);
@@ -491,8 +498,8 @@ function init_wgl()
 	UserInterface.begin();
 		// TERRAIN
 		UserInterface.use_field_set('H', "Terrain Generator");
-		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 500, 50, buildTerrainMesh);
-		slider_terrainSize = UserInterface.add_slider('Size', 1, 30, 1, buildTerrainMesh);
+		slider_terrainPrecision = UserInterface.add_slider('Precision', 500, 500, 50, buildTerrainMesh);
+		slider_terrainSize = UserInterface.add_slider('Size', 15, 30, 1, buildTerrainMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
 		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 100.0, 40.0, update_wgl);
 		UserInterface.end_use();
@@ -726,8 +733,7 @@ function draw_water()
 }
 
 /*
-dupliquer pour refract / reflect
-appeler les shader terrain/skybox direct en mode "screenshot"
+appel les shader terrain/skybox direct en mode "screenshot"
 
 normalize divize coordinate (~xy/w)
 */
