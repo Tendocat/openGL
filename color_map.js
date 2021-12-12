@@ -498,8 +498,8 @@ function init_wgl()
 	UserInterface.begin();
 		// TERRAIN
 		UserInterface.use_field_set('H', "Terrain Generator");
-		slider_terrainPrecision = UserInterface.add_slider('Precision', 500, 500, 50, buildTerrainMesh);
-		slider_terrainSize = UserInterface.add_slider('Size', 15, 30, 1, buildTerrainMesh);
+		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 500, 400, buildTerrainMesh);
+		slider_terrainSize = UserInterface.add_slider('Size', 1, 30, 20, buildTerrainMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
 		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 100.0, 40.0, update_wgl);
 		UserInterface.end_use();
