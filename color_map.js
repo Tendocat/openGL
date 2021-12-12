@@ -145,7 +145,7 @@ void main()
 	vec3 n = normalize(v_normal);
 	float lightIntensity = uLightIntensity *.5;	// better less
 	// AMBIANT
-	vec3 Ka = ucolor_map[int(height*178.)].xyz;	// adapt to colormap length
+	vec3 Ka = ucolor_map[clamp(int(height*200.),0,254)].xyz;	// adapt to colormap length
 	vec3 Ia = lightIntensity * Ka;
 
 	// DIFFUS
@@ -268,7 +268,7 @@ void main()
 {
 	vec2 uv = texCoord*2.-1.;
 	float noise = rand(uv)*.005;
-	vec2 distortedTexCoord = noise+vec2(uv.x + mod(uTime+texCoord.x*sin(uTime)*.2, 20.)*.05, uv.y + mod(texCoord.y*cos(uTime)*.2, 20.)*.05); // vagues très simples
+	vec2 distortedTexCoord = noise+vec2(uv.x + mod(uTime+uv.x*sin(uTime)*.2, 20.)*.05, uv.y + mod(uv.y*cos(uTime)*.2, 20.)*.05); // vagues très simples
 	
 	vec4 distorsion = texture(uTexDistorsion, distortedTexCoord);
 	vec2 ndc = (cliping.xy/cliping.w)*.5 + .5;
@@ -296,8 +296,8 @@ void main()
 
 	// DIFFUS
 	vec3 lightDir = normalize(uLightPosition - v_position);
-	float diffuseTerm = dot(normal, lightDir);
-	vec3 Id = uLightIntensity * Ka * max(0.0, diffuseTerm);
+	float diffuseTerm = max(0.0, dot(normal, lightDir));
+	vec3 Id = uLightIntensity * Ka * diffuseTerm;
 	Id = Id / M_PI;
 
 	float uNs = 40.;
@@ -308,7 +308,7 @@ void main()
 	{
 		vec3 viewDir = normalize(-v_position.xyz);
 		vec3 halfDir = normalize(viewDir + lightDir);
-		float specularTerm = max(0.0, pow(dot(normal, halfDir), uNs));
+		float specularTerm = clamp(pow(dot(normal, halfDir), uNs), 0., 1.);
 		Is = uLightIntensity * vec3(4.4,2.,1.3) * vec3(specularTerm);
 		Is /= (uNs + 2.0) / (2.0 * M_PI);
 	}
@@ -499,7 +499,7 @@ function init_wgl()
 		// TERRAIN
 		UserInterface.use_field_set('H', "Terrain Generator");
 		slider_terrainPrecision = UserInterface.add_slider('Precision', 2, 500, 400, buildTerrainMesh);
-		slider_terrainSize = UserInterface.add_slider('Size', 1, 30, 20, buildTerrainMesh);
+		slider_terrainSize = UserInterface.add_slider('Size', 1, 30, 10, buildTerrainMesh);
 		slider_terrainElevation = UserInterface.add_slider('Elevation', 3.0, 20.0, 5.0, update_wgl);
 		slider_water_height = UserInterface.add_slider('Hauteur de l\'eau', 0.0, 100.0, 40.0, update_wgl);
 		UserInterface.end_use();
@@ -514,7 +514,7 @@ function init_wgl()
 		slider_light_z  = UserInterface.add_slider('Z ', -100, 100, -100, update_wgl);
 		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
 		UserInterface.end_use();
-		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 50, 40, update_wgl);
+		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 100, 40, update_wgl);
 		UserInterface.end_use();
 
 	UserInterface.end();
@@ -689,6 +689,8 @@ function draw_terrain(mode)
 //--------------------------------------------------------------------------------------------------------
 function draw_water()
 {
+	render_fbo();
+
 	waterShader.bind();
 
 	let viewMatrix = ewgl.scene_camera.get_view_matrix();
@@ -731,12 +733,10 @@ function draw_water()
 	gl.bindVertexArray(null);
 	gl.useProgram(null);
 }
-
-/*
-appel les shader terrain/skybox direct en mode "screenshot"
-
-normalize divize coordinate (~xy/w)
-*/
+ 
+//--------------------------------------------------------------------------------------------------------
+// appel les shader terrain/skybox en mode "screenshot"
+//--------------------------------------------------------------------------------------------------------
 function render_fbo()
 {
 	gl.viewport(0, 0, fboTexWidth, fboTexHeight);
@@ -772,7 +772,6 @@ function draw_wgl()
 
 	draw_terrain(0);
 
-	render_fbo();
 	draw_water();
 }
 

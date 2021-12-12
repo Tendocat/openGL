@@ -122,7 +122,7 @@ La dernière ligne du script permet de lancer la boucle événementielle.
   * `scene_camera.get_projection_matrix()` renvoit la matrice de projection
   * `scene_camera.get_view_matrix()` renvoit la matrice de vue
 
-Pour charger des ssssscripts ou css avant le démarrage utiliser:
+Pour charger des scripts ou css avant le démarrage utiliser:
 ```javascript
 ewgl.loadRequiredFiles(liste,callback)
 ```
