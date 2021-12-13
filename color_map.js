@@ -257,6 +257,8 @@ uniform sampler2D uTexNormal;
 
 uniform float uLightIntensity;
 uniform vec3 uLightPosition;
+uniform float uNs;
+
 // OUTPUT
 out vec4 oFragmentColor;
 
@@ -300,7 +302,6 @@ void main()
 	vec3 Id = uLightIntensity * Ka * diffuseTerm;
 	Id = Id / M_PI;
 
-	float uNs = 40.;
 
 	// SPECULAIRE
 	vec3 Is = vec3(0.0);
@@ -308,7 +309,7 @@ void main()
 	{
 		vec3 viewDir = normalize(-v_position.xyz);
 		vec3 halfDir = normalize(viewDir + lightDir);
-		float specularTerm = clamp(pow(dot(normal, halfDir), uNs), 0., 1.);
+		float specularTerm = pow(dot(normal, halfDir), uNs);
 		Is = uLightIntensity * vec3(4.4,2.,1.3) * vec3(specularTerm);
 		Is /= (uNs + 2.0) / (2.0 * M_PI);
 	}
@@ -345,6 +346,7 @@ var slider_light_x;
 var slider_light_y;
 var slider_light_z;
 var slider_light_intensity;
+var slider_light_uNs;
 // - water
 var nbMeshWater = 6;
 var slider_water_height;
@@ -515,6 +517,7 @@ function init_wgl()
 		UserInterface.set_widget_color(slider_light_z, '#0000ff', '#ccccff');
 		UserInterface.end_use();
 		slider_light_intensity  = UserInterface.add_slider('intensity', 0, 100, 40, update_wgl);
+		slider_light_uNs = UserInterface.add_slider('Nspec', 1, 40, 20, update_wgl);
 		UserInterface.end_use();
 
 	UserInterface.end();
@@ -721,7 +724,8 @@ function draw_water()
 	// - lighting
 	Uniforms.uLightIntensity = slider_light_intensity.value/20;
 	Uniforms.uLightPosition = mvm.transform(Vec3(slider_light_x.value, slider_light_y.value, slider_light_z.value));
-	
+	Uniforms.uNs = slider_light_uNs.value;
+
 	var cameraInfo = ewgl.scene_camera.get_look_info();
 	Uniforms.uCameraPosition = cameraInfo[0];
 	Uniforms.uHeight = slider_water_height.value/100;
