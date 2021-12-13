@@ -286,9 +286,9 @@ void main()
 	vec3 toCamera = normalize(v_fragmentToCamera);
 
     // Fresnel Effect. Looking at the water from above makes the water more transparent.
-    float fresnel = 1. - dot(toCamera, normal);
+    float fresnel = dot(toCamera, normal)*.8;
 
-	vec4 raleColor = mix(refractColor, relectColor, fresnel);
+	vec4 raleColor = mix(relectColor, refractColor, fresnel);
 
 	// LIGHTING
 
