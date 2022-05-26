@@ -13,10 +13,10 @@
 J'ai codé une génération procédurale du terrain.
 Pour la faire j'ai réutilisé l'instanciation de la grille de vertex du TP2.
 Et j'y ai ensuite ajouté un bruit en `y` en fonction de la position `xz`.
-Il suffisait après d'adapter la valeur de la hauteur à la `color map` pour sélectionner la bonne couleur. 
+Il suffisait après d'adapter la valeur de la hauteur à la `color map` pour sélectionner la bonne couleur. xxxxx
 J'ai calculé les normales avec la méthode des différences finies.
 
-Pour pouvoir visualiser un plus grand terrain j'ai reculé la caméra de manière à ce que le frustrum ne perturbe aps trop la caméra. 
+Pour pouvoir visualiser un plus grand terrain j'ai reculéx la caméra de manière à ce que le frustrum ne perturbe aps trop la caméra. 
 
 ## Rendu de l'eau
 
@@ -34,6 +34,7 @@ Il y a des artéfacts de moire qui apparraissent à grande distance. Il faudrait
 
 
 J'ai essayé de donner une couleur de soleil à la spécularité.
+
 ![coucherDeSoleil](result.png)
 
 J'ai pu voir une différence entre certain PC au niveau de la specularité :
